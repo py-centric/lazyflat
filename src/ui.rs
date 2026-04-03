@@ -22,7 +22,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         .split(f.area());
 
     draw_header(f, app, chunks[0]);
-    draw_main(f, app, chunks[1]);
+    if app.view_mode == crate::app::ViewMode::Permissions {
+        draw_permissions_view(f, app, chunks[1]);
+    } else {
+        draw_main(f, app, chunks[1]);
+    }
     draw_footer(f, app, chunks[2]);
 
     if app.show_help {
@@ -55,12 +59,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
-    let titles = vec![Line::from(" Up To Date "), Line::from(" Updates Available "), Line::from(" Runtimes ")];
+    let titles = vec![Line::from(" Up To Date "), Line::from(" Updates Available "), Line::from(" Runtimes "), Line::from(" Discover ")];
     
     let tab_index = match app.current_tab {
         AppTab::UpToDate => 0,
         AppTab::Updates => 1,
         AppTab::Runtimes => 2,
+        AppTab::Discover => 3,
     };
 
     let tabs = Tabs::new(titles)
@@ -90,12 +95,21 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
         AppTab::UpToDate => &app.up_to_date_apps,
         AppTab::Updates => &app.updates,
         AppTab::Runtimes => &app.runtimes,
+        AppTab::Discover => &app.discover_results,
     };
 
     let rows: Vec<Row> = list_items
         .iter()
         .map(|item| {
-            let name_cell = Cell::from(item.name.as_str());
+            let mut name_text = item.name.clone();
+            let mut name_style = Style::default();
+            
+            if app.current_tab == AppTab::Discover && app.is_installed(&item.application_id) {
+                name_text = format!("{} (installed)", item.name);
+                name_style = name_style.fg(Color::Green);
+            }
+            
+            let name_cell = Cell::from(name_text).style(name_style);
             let app_id_cell = Cell::from(item.application_id.as_str()).style(Style::default().fg(Color::DarkGray));
             let version_cell = Cell::from(item.version.as_str()).style(Style::default().fg(Color::Blue));
             
@@ -103,8 +117,10 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
 
+    let title = if app.current_tab == AppTab::Discover { " Results " } else { " Installed " };
+
     let table = Table::new(rows, [Constraint::Percentage(40), Constraint::Length(10), Constraint::Percentage(50)])
-        .block(Block::default().borders(Borders::ALL).title(" Installed "))
+        .block(Block::default().borders(Borders::ALL).title(title))
         .row_highlight_style(
             Style::default()
                 .bg(Color::Blue)
@@ -126,8 +142,9 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
                     format!("{} ({})", item.name, item.application_id),
                     Style::default().add_modifier(Modifier::BOLD),
                 )),
-                Line::from(format!("Version: {}", item.version)),
-                Line::from(format!("Branch: {}", item.branch)),
+                Line::from(format!("Version: {} | Branch: {}", item.version, item.branch)),
+                Line::from(""),
+                Line::from(item.description.clone()),
                 Line::from(""),
             ];
             
@@ -157,16 +174,64 @@ fn draw_details(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(paragraph, area);
 }
 
+fn draw_permissions_view(f: &mut Frame, app: &mut App, area: Rect) {
+    let rows: Vec<Row> = app.permissions
+        .iter()
+        .map(|(perm, enabled)| {
+            let status = if *enabled { "[X]" } else { "[ ]" };
+            let style = if *enabled { Style::default().fg(Color::Green) } else { Style::default().fg(Color::DarkGray) };
+            Row::new(vec![
+                Cell::from(status).style(style),
+                Cell::from(perm.as_str()),
+            ])
+        })
+        .collect();
+
+    let title = format!(" Permissions for {} ", app.get_selected_id().unwrap_or_default());
+    
+    let footer_text = vec![
+        Line::from(""),
+        Line::from(Span::styled("Note: Some changes may require root (system-wide apps).", Style::default().fg(Color::Yellow))),
+        Line::from(Span::styled("If an error occurs, try launching lazyflat with 'sudo' or use:", Style::default().fg(Color::Gray))),
+        Line::from(Span::styled(format!("  flatpak override --user --nosocket=wayland {}", app.get_selected_id().unwrap_or_default()), Style::default().fg(Color::Cyan))),
+    ];
+    
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(5), Constraint::Length(5)].as_ref())
+        .split(area);
+
+    let table = Table::new(rows, [Constraint::Length(5), Constraint::Min(20)])
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .row_highlight_style(
+            Style::default()
+                .bg(Color::Blue)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol(">> ");
+
+    f.render_stateful_widget(table, chunks[0], &mut app.permissions_state);
+    f.render_widget(Paragraph::new(footer_text), chunks[1]);
+}
+
 fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     let status_text = match app.input_mode {
         InputMode::Search => format!(" Search: {}_ ", app.search_query),
         InputMode::Normal => {
-            if app.loading {
+            if let Some(ref msg) = app.status_message {
+                format!(" [{}] ", msg)
+            } else if app.loading {
                 " [Loading...] ".to_string()
             } else if let Some(ref err) = app.error {
                 err.clone()
+            } else if app.view_mode == crate::app::ViewMode::Permissions {
+                " Space: Toggle | Esc/p: Back | j/k: Nav | r: Refresh ".to_string()
             } else {
-                " q: Quit | ?: Help | j/k: Nav | h/l: Tabs | x: Uninstall | u: Update | U: Update All | r: Refresh | /: Search ".to_string()
+                if app.current_tab == AppTab::Discover {
+                    " q: Quit | ?: Help | j/k: Nav | h/l: Tabs | i: Install | r: Refresh | /: Search ".to_string()
+                } else {
+                    " q: Quit | ?: Help | j/k: Nav | h/l: Tabs | p: Permissions | x: Uninstall | u: Update | U: Update All | r: Refresh | /: Search ".to_string()
+                }
             }
         }
     };
@@ -174,7 +239,9 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     let style = match app.input_mode {
         InputMode::Search => Style::default().fg(Color::Black).bg(Color::Yellow),
         InputMode::Normal => {
-            if app.error.is_some() {
+            if app.status_message.is_some() {
+                Style::default().fg(Color::Cyan).bg(Color::Black)
+            } else if app.error.is_some() {
                 Style::default().fg(Color::Red).bg(Color::Black)
             } else if app.loading {
                 Style::default().fg(Color::Yellow)
