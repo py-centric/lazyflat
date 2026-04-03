@@ -13,32 +13,34 @@ pub struct FlatpakApp {
 }
 
 pub async fn get_installed_apps() -> Result<Vec<FlatpakApp>> {
-    get_flatpak_list("--app").await
-}
-
-pub async fn get_installed_runtimes() -> Result<Vec<FlatpakApp>> {
-    get_flatpak_list("--runtime").await
-}
-
-async fn get_flatpak_list(app_type: &str) -> Result<Vec<FlatpakApp>> {
     let output = Command::new("flatpak")
         .arg("list")
-        .arg(app_type)
+        .arg("--app")
         .arg("--columns=name,description,application,version,branch")
         .stdout(Stdio::piped())
         .output()
         .await?;
+    Ok(parse_flatpak_list(&String::from_utf8_lossy(&output.stdout)))
+}
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+pub async fn get_installed_runtimes() -> Result<Vec<FlatpakApp>> {
+    let output = Command::new("flatpak")
+        .arg("list")
+        .arg("--runtime")
+        .arg("--columns=name,description,application,version,branch")
+        .stdout(Stdio::piped())
+        .output()
+        .await?;
+    Ok(parse_flatpak_list(&String::from_utf8_lossy(&output.stdout)))
+}
+
+fn parse_flatpak_list(stdout: &str) -> Vec<FlatpakApp> {
     let mut apps = Vec::new();
-
     for line in stdout.lines() {
         if line.trim().is_empty() {
             continue;
         }
 
-        // Flatpak usually outputs columns separated by tabs or spaces.
-        // When piped, it typically emits tabs.
         let parts: Vec<&str> = if line.contains('\t') {
             line.split('\t').collect()
         } else {
@@ -59,8 +61,7 @@ async fn get_flatpak_list(app_type: &str) -> Result<Vec<FlatpakApp>> {
             });
         }
     }
-
-    Ok(apps)
+    apps
 }
 
 pub async fn get_app_info(application_id: &str) -> Result<String> {
@@ -117,36 +118,7 @@ pub async fn get_updates() -> Result<Vec<FlatpakApp>> {
         .output()
         .await?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut apps = Vec::new();
-
-    for line in stdout.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-
-        let parts: Vec<&str> = if line.contains('\t') {
-            line.split('\t').collect()
-        } else {
-            line.split("  ").filter(|s| !s.trim().is_empty()).collect()
-        };
-
-        if parts.len() >= 2 {
-            let app_idx = parts.iter().position(|s| s.contains('.') && !s.contains(' ')).unwrap_or(2.min(parts.len() - 1));
-            let desc = if app_idx > 1 { parts[1..app_idx].join(" ") } else { "".to_string() };
-            
-            apps.push(FlatpakApp {
-                name: parts[0].trim().to_string(),
-                description: desc.trim().to_string(),
-                application_id: parts[app_idx].trim().to_string(),
-                version: parts.get(app_idx + 1).unwrap_or(&"").trim().to_string(),
-                branch: parts.get(app_idx + 2).unwrap_or(&"").trim().to_string(),
-                details: None,
-            });
-        }
-    }
-
-    Ok(apps)
+    Ok(parse_flatpak_list(&String::from_utf8_lossy(&output.stdout)))
 }
 
 pub async fn update_all() -> Result<()> {
@@ -173,9 +145,11 @@ pub async fn search_remote_apps(query: &str) -> Result<Vec<FlatpakApp>> {
         .output()
         .await?;
         
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_search_results(&String::from_utf8_lossy(&output.stdout)))
+}
+
+fn parse_search_results(stdout: &str) -> Vec<FlatpakApp> {
     let mut apps = Vec::new();
-    
     for line in stdout.lines() {
         if line.trim().is_empty() || line.starts_with("Name") || line.contains("Application ID") { 
             continue; 
@@ -188,7 +162,7 @@ pub async fn search_remote_apps(query: &str) -> Result<Vec<FlatpakApp>> {
         };
         
         if parts.len() >= 2 {
-            let app_idx = parts.iter().position(|s| s.contains('.') && !s.contains(' ')).unwrap_or(2.min(parts.len() - 1));
+            let app_idx = parts.iter().position(|s| s.trim().contains('.') && !s.trim().contains(' ')).unwrap_or(2.min(parts.len() - 1));
             let desc = if app_idx > 1 { parts[1..app_idx].join(" ") } else { "".to_string() };
             
             apps.push(FlatpakApp {
@@ -201,7 +175,7 @@ pub async fn search_remote_apps(query: &str) -> Result<Vec<FlatpakApp>> {
             });
         }
     }
-    Ok(apps)
+    apps
 }
 
 pub async fn install_app(application_id: &str) -> Result<()> {
@@ -222,9 +196,6 @@ pub async fn install_app(application_id: &str) -> Result<()> {
 }
 
 pub async fn get_app_permissions(application_id: &str) -> Result<Vec<(String, bool)>> {
-    // We'll use 'flatpak info --show-permissions' to get current permissions
-    // and 'flatpak info -M' to get all possible/default permissions if needed.
-    // Simplifying: just get what's currently active.
     let output = Command::new("flatpak")
         .arg("info")
         .arg("--show-permissions")
@@ -233,15 +204,16 @@ pub async fn get_app_permissions(application_id: &str) -> Result<Vec<(String, bo
         .output()
         .await?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_app_permissions(&String::from_utf8_lossy(&output.stdout)))
+}
+
+fn parse_app_permissions(stdout: &str) -> Vec<(String, bool)> {
     let mut permissions = Vec::new();
-    
     for line in stdout.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with("[") {
             continue;
         }
-        // Lines are usually like "filesystems=home;xdg-config/kdeglobals:ro;"
         if let Some((key, values)) = line.split_once('=') {
             for val in values.split(';') {
                 if !val.is_empty() {
@@ -252,16 +224,10 @@ pub async fn get_app_permissions(application_id: &str) -> Result<Vec<(String, bo
             permissions.push((line.to_string(), true));
         }
     }
-    Ok(permissions)
+    permissions
 }
 
 pub async fn set_app_permission(application_id: &str, permission: &str, enable: bool) -> Result<()> {
-    // Try user override first, if it fails, suggest root/system
-    let action = if enable { "--unoverride" } else { "--nosocket" }; // Simplified for now
-    // Actually, flatpak override use --[enable|disable] or --nosocket etc.
-    // For simplicity, let's use the explicit override syntax:
-    // flatpak override --user --nosocket=wayland org.test.App
-    
     let mut command = Command::new("flatpak");
     command.arg("override").arg("--user");
     
@@ -283,13 +249,76 @@ pub async fn set_app_permission(application_id: &str, permission: &str, enable: 
     }
     
     command.arg(application_id);
-    
     let output = command.output().await?;
     
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!("Permission change failed: {}. Try running as root for system-wide apps.", stderr);
     }
-    
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn test_parse_flatpak_list_tabbed() {
+        let stdout = "Firefox\tWeb Browser\torg.mozilla.firefox\t123.0\tstable\n";
+        let apps = parse_flatpak_list(stdout);
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].name, "Firefox");
+        assert_eq!(apps[0].application_id, "org.mozilla.firefox");
+        assert_eq!(apps[0].version, "123.0");
+    }
+
+    #[test]
+    fn test_parse_flatpak_list_spaced() {
+        let stdout = "Firefox  Web Browser  org.mozilla.firefox  123.0  stable\n";
+        let apps = parse_flatpak_list(stdout);
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].name, "Firefox");
+        assert_eq!(apps[0].application_id, "org.mozilla.firefox");
+    }
+
+    #[test]
+    fn test_parse_search_results() {
+        let stdout = "Name  Description  Application ID  Version  Branch\n\
+                       VLC   Player       org.videolan.VLC  3.0.20   stable\n";
+        let apps = parse_search_results(stdout);
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].name, "VLC");
+        assert_eq!(apps[0].application_id, "org.videolan.VLC");
+    }
+
+    #[test]
+    fn test_parse_app_permissions() {
+        let stdout = "[Context]\n\
+                      filesystems=home;xdg-config/kdeglobals:ro;\n\
+                      sockets=wayland;x11;\n";
+        let perms = parse_app_permissions(stdout);
+        assert_eq!(perms.len(), 4);
+        assert!(perms.contains(&("filesystems=home".to_string(), true)));
+        assert!(perms.contains(&("sockets=wayland".to_string(), true)));
+        assert!(perms.contains(&("filesystems=xdg-config/kdeglobals:ro".to_string(), true)));
+    }
+
+    #[test]
+    fn test_parse_flatpak_list_empty() {
+        assert_eq!(parse_flatpak_list("").len(), 0);
+        assert_eq!(parse_flatpak_list("\n\n").len(), 0);
+    }
+
+    #[test]
+    fn test_parse_flatpak_list_malformed() {
+        let stdout = "Malformed Line Without Enough Parts\n";
+        let apps = parse_flatpak_list(stdout);
+        assert_eq!(apps.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_app_permissions_empty() {
+        assert_eq!(parse_app_permissions("").len(), 0);
+    }
 }
