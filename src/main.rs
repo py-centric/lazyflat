@@ -1,6 +1,6 @@
 use anyhow::Result;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseEventKind},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -14,7 +14,7 @@ mod app;
 mod flatpak;
 mod ui;
 
-use app::App;
+use app::{App, InputMode, Tab, ViewMode};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -110,127 +110,48 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Resul
             let evt = event::read()?;
             match evt {
                 Event::Key(key) => {
-                    match app.input_mode {
-                        app::InputMode::Normal => {
-                            if app.show_help {
-                                match key.code {
-                                    KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('?') => {
-                                        app.show_help = false;
-                                    }
-                                    _ => {}
+                    if key.kind == KeyEventKind::Press {
+                        if app.input_mode == InputMode::Normal {
+                            match app.handle_normal_key(key.code) {
+                                Some(true) => return Ok(()),
+                                Some(false) => {
+                                    app.refresh_data().await?;
                                 }
-                            } else if app.view_mode == app::ViewMode::Permissions {
-                                match key.code {
-                                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('p') => {
-                                        app.toggle_permissions_view();
-                                    }
-                                    KeyCode::Down | KeyCode::Char('j') => {
-                                        let len = app.permissions.len();
-                                        if len > 0 {
-                                            let i = match app.permissions_state.selected() {
-                                                Some(i) => if i >= len - 1 { 0 } else { i + 1 },
-                                                None => 0,
-                                            };
-                                            app.permissions_state.select(Some(i));
-                                        }
-                                    }
-                                    KeyCode::Up | KeyCode::Char('k') => {
-                                        let len = app.permissions.len();
-                                        if len > 0 {
-                                            let i = match app.permissions_state.selected() {
-                                                Some(i) => if i == 0 { len - 1 } else { i - 1 },
-                                                None => 0,
-                                            };
-                                            app.permissions_state.select(Some(i));
-                                        }
-                                    }
-                                    KeyCode::Char(' ') => {
-                                        app.toggle_selected_permission();
-                                    }
-                                    _ => {}
-                                }
-                            } else {
-                                match key.code {
-                                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                                    KeyCode::Char('?') => app.show_help = true,
-                                    KeyCode::Char('/') => {
-                                        app.input_mode = app::InputMode::Search;
-                                        app.search_query.clear();
-                                    }
-                                    KeyCode::Char('r') => {
-                                        app.refresh_data().await?;
-                                    }
-                                    KeyCode::Right | KeyCode::Char('l') => app.next_tab(),
-                                    KeyCode::Left | KeyCode::Char('h') => app.previous_tab(),
-                                    KeyCode::Down | KeyCode::Char('j') => app.next_item(),
-                                    KeyCode::Up | KeyCode::Char('k') => app.previous_item(),
-                                    KeyCode::Char('x') => {
-                                        app.uninstall_selected();
-                                    }
-                                    KeyCode::Char('u') => {
-                                        app.update_selected();
-                                    }
-                                    KeyCode::Char('U') => {
-                                        app.update_all();
-                                    }
-                                    KeyCode::Char('i') => {
-                                        if app.current_tab == app::Tab::Discover {
-                                            app.install_selected();
-                                        }
-                                    }
-                                    KeyCode::Char('p') => {
-                                        app.toggle_permissions_view();
-                                    }
-                                    _ => {}
-                                }
+                                None => {}
                             }
+                        } else {
+                            app.handle_search_key(key.code);
                         }
-                        app::InputMode::Search => match key.code {
-                            KeyCode::Esc | KeyCode::Enter => {
-                                if app.current_tab == app::Tab::Discover && key.code == KeyCode::Enter && !app.search_query.trim().is_empty() {
-                                    let q = app.search_query.clone();
-                                    app.search_remote(q);
-                                }
-                                app.input_mode = app::InputMode::Normal;
-                            }
-                            KeyCode::Char(c) => {
-                                app.search_query.push(c);
-                                app.table_state.select(Some(0));
-                            }
-                            KeyCode::Backspace => {
-                                app.search_query.pop();
-                                app.table_state.select(Some(0));
-                            }
-                            _ => {}
-                        },
                     }
                 }
-                Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollDown => app.next_item(),
-                    MouseEventKind::ScrollUp => app.previous_item(),
-                    MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                        if mouse.row <= 2 {
-                            if mouse.column < 15 {
-                                app.current_tab = app::Tab::UpToDate;
-                            } else if mouse.column < 35 {
-                                app.current_tab = app::Tab::Updates;
-                            } else if mouse.column < 47 {
-                                app.current_tab = app::Tab::Runtimes;
-                            } else {
-                                app.current_tab = app::Tab::Discover;
-                            }
-                            app.table_state.select(Some(0));
-                        } else if mouse.row >= 4 {
-                            let visible_row = (mouse.row - 4) as usize;
-                            let offset = app.table_state.offset();
-                            let target = offset + visible_row;
-                            if target < app.get_current_list().len() {
-                                app.table_state.select(Some(target));
+                Event::Mouse(mouse) => {
+                    match mouse.kind {
+                        MouseEventKind::ScrollDown => app.next_item(),
+                        MouseEventKind::ScrollUp => app.previous_item(),
+                        MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                            if mouse.row <= 2 {
+                                if mouse.column < 15 {
+                                    app.current_tab = Tab::UpToDate;
+                                } else if mouse.column < 35 {
+                                    app.current_tab = Tab::Updates;
+                                } else if mouse.column < 47 {
+                                    app.current_tab = Tab::Runtimes;
+                                } else {
+                                    app.current_tab = Tab::Discover;
+                                }
+                                app.table_state.select(Some(0));
+                            } else if mouse.row >= 4 {
+                                let visible_row = (mouse.row - 4) as usize;
+                                let offset = app.table_state.offset();
+                                let target = offset + visible_row;
+                                if target < app.get_current_list().len() {
+                                    app.table_state.select(Some(target));
+                                }
                             }
                         }
+                        _ => {}
                     }
-                    _ => {}
-                },
+                }
                 _ => {}
             }
         }

@@ -1,12 +1,13 @@
 use anyhow::Result;
 use ratatui::widgets::TableState;
+use ratatui::crossterm::event::KeyCode;
 
 use crate::flatpak::{FlatpakApp, get_installed_apps, get_installed_runtimes, get_updates};
 
 use std::sync::{Arc, Mutex};
 use std::collections::HashSet;
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Tab {
     UpToDate,
     Updates,
@@ -14,12 +15,13 @@ pub enum Tab {
     Discover,
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum InputMode {
     Normal,
     Search,
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum ViewMode {
     List,
     Permissions,
@@ -343,6 +345,100 @@ impl App {
         }
     }
 
+    pub fn handle_normal_key(&mut self, code: KeyCode) -> Option<bool> {
+        if self.show_help {
+            match code {
+                KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('?') => {
+                    self.show_help = false;
+                }
+                _ => {}
+            }
+            return None;
+        }
+
+        if self.view_mode == ViewMode::Permissions {
+            match code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('p') => {
+                    self.toggle_permissions_view();
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let len = self.permissions.len();
+                    if len > 0 {
+                        let i = match self.permissions_state.selected() {
+                            Some(i) => if i >= len - 1 { 0 } else { i + 1 },
+                            None => 0,
+                        };
+                        self.permissions_state.select(Some(i));
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    let len = self.permissions.len();
+                    if len > 0 {
+                        let i = match self.permissions_state.selected() {
+                            Some(i) => if i == 0 { len - 1 } else { i - 1 },
+                            None => 0,
+                        };
+                        self.permissions_state.select(Some(i));
+                    }
+                }
+                KeyCode::Char(' ') => {
+                    self.toggle_selected_permission();
+                }
+                _ => {}
+            }
+            return None;
+        }
+
+        match code {
+            KeyCode::Char('q') | KeyCode::Esc => return Some(true), // Exit
+            KeyCode::Char('?') => self.show_help = true,
+            KeyCode::Char('/') => {
+                self.input_mode = InputMode::Search;
+                self.search_query.clear();
+            }
+            KeyCode::Char('r') => {
+                // Return false to indicate async refresh needed or just return None
+                return Some(false); 
+            }
+            KeyCode::Right | KeyCode::Char('l') => self.next_tab(),
+            KeyCode::Left | KeyCode::Char('h') => self.previous_tab(),
+            KeyCode::Down | KeyCode::Char('j') => self.next_item(),
+            KeyCode::Up | KeyCode::Char('k') => self.previous_item(),
+            KeyCode::Char('x') => self.uninstall_selected(),
+            KeyCode::Char('u') => self.update_selected(),
+            KeyCode::Char('U') => self.update_all(),
+            KeyCode::Char('i') => {
+                if self.current_tab == Tab::Discover {
+                    self.install_selected();
+                }
+            }
+            KeyCode::Char('p') => self.toggle_permissions_view(),
+            _ => {}
+        }
+        None
+    }
+
+    pub fn handle_search_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc | KeyCode::Enter => {
+                if self.current_tab == Tab::Discover && code == KeyCode::Enter && !self.search_query.trim().is_empty() {
+                    let q = self.search_query.clone();
+                    self.search_remote(q);
+                }
+                self.input_mode = InputMode::Normal;
+            }
+            KeyCode::Char(c) => {
+                self.search_query.push(c);
+                self.table_state.select(Some(0));
+            }
+            KeyCode::Backspace => {
+                self.search_query.pop();
+                self.table_state.select(Some(0));
+            }
+            _ => {}
+        }
+    }
+
     pub fn toggle_selected_permission(&mut self) {
         if self.view_mode != ViewMode::Permissions { return; }
         if let Some(i) = self.permissions_state.selected() {
@@ -365,5 +461,137 @@ impl App {
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::flatpak::FlatpakApp;
+    use pretty_assertions::assert_eq;
+
+    fn create_test_app() -> App {
+        let mut app = App::new();
+        app.up_to_date_apps = vec![
+            FlatpakApp { 
+                name: "Alpha".to_string(), 
+                application_id: "org.alpha.App".to_string(), 
+                ..Default::default() 
+            },
+            FlatpakApp { 
+                name: "Beta".to_string(), 
+                application_id: "org.beta.App".to_string(), 
+                ..Default::default() 
+            },
+        ];
+        app.updates = app.up_to_date_apps.clone();
+        app.installed_ids.insert("org.alpha.App".to_string());
+        app.installed_ids.insert("org.beta.App".to_string());
+        app.table_state.select(Some(0));
+        app
+    }
+
+    #[test]
+    fn test_tab_navigation() {
+        let mut app = App::new();
+        assert_eq!(app.current_tab, Tab::UpToDate);
+        app.next_tab();
+        assert_eq!(app.current_tab, Tab::Updates);
+        app.next_tab();
+        assert_eq!(app.current_tab, Tab::Runtimes);
+        app.next_tab();
+        assert_eq!(app.current_tab, Tab::Discover);
+        app.next_tab();
+        assert_eq!(app.current_tab, Tab::UpToDate);
+        
+        app.previous_tab();
+        assert_eq!(app.current_tab, Tab::Discover);
+    }
+
+    #[test]
+    fn test_item_navigation() {
+        let mut app = create_test_app();
+        assert_eq!(app.table_state.selected(), Some(0));
+        app.next_item();
+        assert_eq!(app.table_state.selected(), Some(1));
+        app.next_item(); // Should wrap
+        assert_eq!(app.table_state.selected(), Some(0));
+        app.previous_item(); // Should wrap
+        assert_eq!(app.table_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn test_search_filtering() {
+        let mut app = create_test_app();
+        app.search_query = "alp".to_string();
+        let list = app.get_current_list();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "Alpha");
+
+        app.search_query = "nonexistent".to_string();
+        assert_eq!(app.get_current_list().len(), 0);
+    }
+
+    #[test]
+    fn test_get_selected_id() {
+        let mut app = create_test_app();
+        app.table_state.select(Some(0));
+        assert_eq!(app.get_selected_id(), Some("org.alpha.App".to_string()));
+        app.table_state.select(Some(1));
+        assert_eq!(app.get_selected_id(), Some("org.beta.App".to_string()));
+        app.table_state.select(None);
+        assert_eq!(app.get_selected_id(), None);
+    }
+
+    #[test]
+    fn test_is_installed() {
+        let app = create_test_app();
+        assert!(app.is_installed("org.alpha.App"));
+        assert!(!app.is_installed("org.gamma.App"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_normal_key() {
+        let mut app = create_test_app();
+        
+        // Tab navigation
+        app.handle_normal_key(KeyCode::Right);
+        assert_eq!(app.current_tab, Tab::Updates);
+        
+        // Item navigation
+        app.handle_normal_key(KeyCode::Down);
+        assert_eq!(app.table_state.selected(), Some(1));
+        
+        // Help toggle
+        app.handle_normal_key(KeyCode::Char('?'));
+        assert!(app.show_help);
+        app.handle_normal_key(KeyCode::Char('q'));
+        assert!(!app.show_help);
+        
+        // Mode switch to Permissions
+        app.handle_normal_key(KeyCode::Char('p'));
+        assert_eq!(app.view_mode, ViewMode::Permissions);
+        
+        // Quit intent
+        assert_eq!(app.handle_normal_key(KeyCode::Char('q')), None); // In permissions mode it toggles back
+        assert_eq!(app.view_mode, ViewMode::List);
+        assert_eq!(app.handle_normal_key(KeyCode::Char('q')), Some(true)); // In list mode it quits
+    }
+
+    #[test]
+    fn test_handle_search_key() {
+        let mut app = create_test_app();
+        app.input_mode = InputMode::Search;
+        
+        app.handle_search_key(KeyCode::Char('f'));
+        app.handle_search_key(KeyCode::Char('o'));
+        app.handle_search_key(KeyCode::Char('o'));
+        assert_eq!(app.search_query, "foo");
+        
+        app.handle_search_key(KeyCode::Backspace);
+        assert_eq!(app.search_query, "fo");
+        
+        app.handle_search_key(KeyCode::Enter);
+        assert_eq!(app.input_mode, InputMode::Normal);
     }
 }
