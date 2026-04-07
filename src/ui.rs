@@ -91,14 +91,9 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
-    let list_items = match app.current_tab {
-        AppTab::UpToDate => &app.up_to_date_apps,
-        AppTab::Updates => &app.updates,
-        AppTab::Runtimes => &app.runtimes,
-        AppTab::Discover => &app.discover_results,
-    };
+    let list_items = app.get_current_list();
 
-    let rows: Vec<Row> = list_items
+    let mut rows: Vec<Row> = list_items
         .iter()
         .map(|item| {
             let mut name_text = item.name.clone();
@@ -116,6 +111,26 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
             Row::new(vec![name_cell, version_cell, app_id_cell])
         })
         .collect();
+
+    if rows.is_empty() {
+        let empty_msg = if app.loading || app.status_message.as_ref().map_or(false, |m| m.starts_with("Searching")) {
+            "Searching..."
+        } else if !app.search_query.is_empty() && app.current_tab == AppTab::Discover {
+            "No search results found"
+        } else if !app.search_query.is_empty() {
+            "No search results found in this tab"
+        } else if app.current_tab == AppTab::Discover {
+            "Type '/' to search for packages"
+        } else {
+            "No items found"
+        };
+
+        rows.push(Row::new(vec![
+            Cell::from(empty_msg).style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
+            Cell::from(""),
+            Cell::from(""),
+        ]));
+    }
 
     let title = if app.current_tab == AppTab::Discover { " Results " } else { " Installed " };
 
