@@ -9,7 +9,6 @@ pub struct FlatpakApp {
     pub application_id: String,
     pub version: String,
     pub branch: String,
-    pub details: Option<String>,
 }
 
 pub async fn get_installed_apps() -> Result<Vec<FlatpakApp>> {
@@ -57,7 +56,6 @@ fn parse_flatpak_list(stdout: &str) -> Vec<FlatpakApp> {
                 application_id: parts[app_idx].trim().to_string(),
                 version: parts.get(app_idx + 1).unwrap_or(&"").trim().to_string(),
                 branch: parts.get(app_idx + 2).unwrap_or(&"").trim().to_string(),
-                details: None,
             });
         }
     }
@@ -171,7 +169,6 @@ fn parse_search_results(stdout: &str) -> Vec<FlatpakApp> {
                 application_id: parts[app_idx].trim().to_string(),
                 version: parts.get(app_idx + 1).unwrap_or(&"").trim().to_string(),
                 branch: parts.get(app_idx + 2).unwrap_or(&"").trim().to_string(),
-                details: None,
             });
         }
     }
