@@ -91,35 +91,43 @@ fn draw_main(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
+    // Extract data we need before building rows to avoid borrow conflicts
+    let current_tab = app.current_tab;
+    let installed_ids = app.installed_ids.clone();
+
     let list_items = app.get_current_list();
+    let is_empty = list_items.is_empty();
+    let is_loading = app.loading;
+    let search_query = app.search_query.clone();
+    let status_message = app.status_message.clone();
 
     let mut rows: Vec<Row> = list_items
-        .iter()
+        .into_iter()
         .map(|item| {
             let mut name_text = item.name.clone();
             let mut name_style = Style::default();
-            
-            if app.current_tab == AppTab::Discover && app.is_installed(&item.application_id) {
+
+            if current_tab == AppTab::Discover && installed_ids.contains(&item.application_id) {
                 name_text = format!("{} (installed)", item.name);
                 name_style = name_style.fg(Color::Green);
             }
-            
+
             let name_cell = Cell::from(name_text).style(name_style);
-            let app_id_cell = Cell::from(item.application_id.as_str()).style(Style::default().fg(Color::DarkGray));
-            let version_cell = Cell::from(item.version.as_str()).style(Style::default().fg(Color::Blue));
-            
+            let app_id_cell = Cell::from(item.application_id.to_string()).style(Style::default().fg(Color::DarkGray));
+            let version_cell = Cell::from(item.version.to_string()).style(Style::default().fg(Color::Blue));
+
             Row::new(vec![name_cell, version_cell, app_id_cell])
         })
         .collect();
 
-    if rows.is_empty() {
-        let empty_msg = if app.loading || app.status_message.as_ref().map_or(false, |m| m.starts_with("Searching")) {
+    if is_empty {
+        let empty_msg = if is_loading || status_message.as_ref().map_or(false, |m| m.starts_with("Searching")) {
             "Searching..."
-        } else if !app.search_query.is_empty() && app.current_tab == AppTab::Discover {
+        } else if !search_query.is_empty() && current_tab == AppTab::Discover {
             "No search results found"
-        } else if !app.search_query.is_empty() {
+        } else if !search_query.is_empty() {
             "No search results found in this tab"
-        } else if app.current_tab == AppTab::Discover {
+        } else if current_tab == AppTab::Discover {
             "Type '/' to search for packages"
         } else {
             "No items found"
@@ -132,7 +140,7 @@ fn draw_list(f: &mut Frame, app: &mut App, area: Rect) {
         ]));
     }
 
-    let title = if app.current_tab == AppTab::Discover { " Results " } else { " Installed " };
+    let title = if current_tab == AppTab::Discover { " Results " } else { " Installed " };
 
     let table = Table::new(rows, [Constraint::Percentage(40), Constraint::Length(10), Constraint::Percentage(50)])
         .block(Block::default().borders(Borders::ALL).title(title))

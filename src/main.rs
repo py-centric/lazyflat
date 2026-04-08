@@ -14,7 +14,7 @@ mod app;
 mod flatpak;
 mod ui;
 
-use app::{App, InputMode, Tab, ViewMode};
+use app::{App, InputMode, Tab};
 
 #[tokio::main]
 async fn main() -> Result<()> {

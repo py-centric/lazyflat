@@ -153,21 +153,21 @@ impl App {
         self.table_state.selected().and_then(|i| list.get(i).map(|a| a.application_id.clone()))
     }
 
-    pub fn get_current_list(&self) -> Vec<&FlatpakApp> {
+    pub fn get_current_list(&self) -> Vec<FlatpakApp> {
         let list = match self.current_tab {
             Tab::UpToDate => &self.up_to_date_apps,
             Tab::Updates => &self.updates,
             Tab::Runtimes => &self.runtimes,
             Tab::Discover => &self.discover_results,
         };
-        
+
         if self.search_query.is_empty() || self.current_tab == Tab::Discover {
-            list.iter().collect()
+            list.iter().cloned().collect()
         } else {
             let q = self.search_query.to_lowercase();
             list.iter().filter(|app| {
                 app.name.to_lowercase().contains(&q) || app.application_id.to_lowercase().contains(&q)
-            }).collect()
+            }).cloned().collect()
         }
     }
 
